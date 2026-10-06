@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,8 +28,11 @@ func startScreen(t *testing.T, h *harness, cols, rows int) *screenRig {
 	t.Helper()
 	emu := vt.NewSafeEmulator(cols, rows)
 	// Sin un TTY real, en Unix Bubble Tea emite LF sin CR esperando que el
-	// terminal lo traduzca; el emulador necesita el modo LNM para hacerlo.
-	emu.WriteString("\x1b[20h")
+	// terminal lo traduzca; el emulador necesita el modo LNM para hacerlo. En
+	// Windows no traduce y usa el LF puro para bajar de fila: con LNM se rompe.
+	if runtime.GOOS != "windows" {
+		emu.WriteString("\x1b[20h")
+	}
 	go io.Copy(io.Discard, emu)
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -55,15 +59,25 @@ func (r *screenRig) lines() []string {
 
 func (r *screenRig) screen() string { return strings.Join(r.lines(), "\n") }
 
-func (r *screenRig) waitFor(text string) {
+func (r *screenRig) until(what string, cond func() bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(r.screen(), text) {
+	for !cond() {
 		if time.Now().After(deadline) {
-			r.t.Fatalf("no se cumplió: %s%s", text, r.dump())
+			r.t.Fatalf("no se cumplió: %s%s", what, r.dump())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func (r *screenRig) waitFor(text string) {
+	r.t.Helper()
+	r.until(text, func() bool { return strings.Contains(r.screen(), text) })
+}
+
+func (r *screenRig) waitGone(text string) {
+	r.t.Helper()
+	r.until("que desaparezca "+text, func() bool { return !strings.Contains(r.screen(), text) })
 }
 
 func (r *screenRig) rowOf(text string) int {
